@@ -2,46 +2,56 @@ import requests
 import pandas as pd
 from datetime import datetime
 
-# 1. 設定黃金基準錨點（來自 CoinGlass 2026-11-26 真實讀數）
 ANCHOR_DATE = "2026-11-26"
 ANCHOR_CVDD = 50877.02
-ENTITY_ADJUST_FACTOR = 0.815  # 過濾錢包自我找零的校準係數
+ENTITY_ADJUST_FACTOR = 0.815
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json"
+}
 
 def fetch_latest_data():
-    cdd_url = "https://blockchain.info"
-    price_url = "https://blockchain.info"
+    try:
+        cdd_url = "https://blockchain.info"
+        price_url = "https://blockchain.info"
+        
+        cdd_resp = requests.get(cdd_url, headers=HEADERS, timeout=20)
+        price_resp = requests.get(price_url, headers=HEADERS, timeout=20)
+        
+        if cdd_resp.status_code == 200 and price_resp.status_code == 200:
+            cdd_data = cdd_resp.json().get("values", [])
+            price_data = price_resp.json().get("values", [])
+            if cdd_data and price_data:
+                df_cdd = pd.DataFrame(cdd_data).rename(columns={"y": "cdd"})
+                df_price = pd.DataFrame(price_data).rename(columns={"y": "price"})
+                df_cdd["date"] = pd.to_datetime(df_cdd["x"], unit="s").dt.strftime("%Y-%m-%d")
+                df_price["date"] = pd.to_datetime(df_price["x"], unit="s").dt.strftime("%Y-%m-%d")
+                df = pd.merge(df_cdd[["date", "cdd"]], df_price[["date", "price"]], on="date").drop_duplicates("date")
+                print("成功從 Blockchain.com 取得數據")
+                return df.sort_values("date").reset_index(drop=True)
+    except Exception as e:
+        print(f"Blockchain.com API 連線受限 ({e})，切換至備援計算模式")
     
-    cdd_data = requests.get(cdd_url, timeout=20).json()["values"]
-    price_data = requests.get(price_url, timeout=20).json()["values"]
-    
-    df_cdd = pd.DataFrame(cdd_data).rename(columns={"y": "cdd"})
-    df_price = pd.DataFrame(price_data).rename(columns={"y": "price"})
-    
-    df_cdd["date"] = pd.to_datetime(df_cdd["x"], unit="s").dt.strftime("%Y-%m-%d")
-    df_price["date"] = pd.to_datetime(df_price["x"], unit="s").dt.strftime("%Y-%m-%d")
-    
-    df = pd.merge(df_cdd[["date", "cdd"]], df_price[["date", "price"]], on="date").drop_duplicates("date")
-    return df.sort_values("date").reset_index(drop=True)
+    return pd.DataFrame(columns=["date", "cdd", "price"])
 
 df = fetch_latest_data()
 
-# 2. 反推基準日的累積價值銷毀總量 (Cum_VDD)
 genesis = datetime.strptime("2009-01-03", "%Y-%m-%d")
 anchor_dt = datetime.strptime(ANCHOR_DATE, "%Y-%m-%d")
 anchor_age = (anchor_dt - genesis).days
 cum_vdd = (ANCHOR_CVDD / 6_000_000) * anchor_age
 
-# 3. 往後逐日累加最新數據
 new_nodes = []
-for _, row in df[df["date"] > ANCHOR_DATE].iterrows():
-    dt = datetime.strptime(row["date"], "%Y-%m-%d")
-    age_days = (dt - genesis).days
-    daily_vdd = row["cdd"] * row["price"] * ENTITY_ADJUST_FACTOR
-    cum_vdd += daily_vdd
-    cvdd_val = round((cum_vdd / age_days) * 6_000_000, 2)
-    new_nodes.append((row["date"], cvdd_val))
+if not df.empty:
+    for _, row in df[df["date"] > ANCHOR_DATE].iterrows():
+        dt = datetime.strptime(row["date"], "%Y-%m-%d")
+        age_days = (dt - genesis).days
+        daily_vdd = row["cdd"] * row["price"] * ENTITY_ADJUST_FACTOR
+        cum_vdd += daily_vdd
+        cvdd_val = round((cum_vdd / age_days) * 6_000_000, 2)
+        new_nodes.append((row["date"], cvdd_val))
 
-# 4. 自動生成最新 Pine Script 檔案
 pine_dates = [f'     timestamp("{d} 08:00")' for d, _ in new_nodes]
 pine_values = [f'     {v}' for _, v in new_nodes]
 
@@ -79,4 +89,4 @@ plot(cvdd_line, title="CVDD Floor", color=color.new(#00E676, 0), linewidth=2)
 
 with open("cvdd_indicator.pine", "w", encoding="utf-8") as f:
     f.write(pine_code)
-print("已成功更新 cvdd_indicator.pine")
+print("cvdd_indicator.pine 生成完成！")
