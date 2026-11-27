@@ -1,0 +1,28 @@
+//@version=5
+indicator("Auto-Synced Bitcoin CVDD", overlay=true)
+
+var int[] dates = array.from(
+     timestamp("2011-01-01 00:00"), timestamp("2015-01-14 00:00"),
+     timestamp("2018-12-15 00:00"), timestamp("2020-03-13 00:00"),
+     timestamp("2022-11-21 00:00"), timestamp("2025-12-06 00:00"),
+     timestamp("2026-11-26 08:00")
+ )
+
+var float[] values = array.from(
+     0.30, 215.0, 3180.0, 5250.0, 15600.0, 46500.0, 50877.02
+ )
+
+get_cvdd(int t) =>
+    float res = array.get(values, array.size(values) - 1)
+    for i = 0 to array.size(dates) - 2
+        int t1 = array.get(dates, i)
+        int t2 = array.get(dates, i + 1)
+        if t >= t1 and t <= t2
+            float v1 = array.get(values, i)
+            float v2 = array.get(values, i + 1)
+            res := v1 + (v2 - v1) * ((t - t1) / (t2 - t1))
+            break
+    res
+
+cvdd_line = get_cvdd(time)
+plot(cvdd_line, title="CVDD Floor", color=color.new(#00E676, 0), linewidth=2)
