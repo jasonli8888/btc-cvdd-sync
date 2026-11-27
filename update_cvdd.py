@@ -9,26 +9,29 @@ from google.oauth2 import service_account
 CSV_FILE = "cvdd_history.csv"
 PINE_FILE = "cvdd_indicator.pine"
 
-# 1. 檢查並載入 Google BigQuery 服務帳戶金鑰
+# 1. 載入 Google BigQuery 服務帳戶金鑰
 raw_key = os.environ.get("GCP_SA_KEY", "").strip()
 if not raw_key:
-    raise ValueError("尚未設定 GCP_SA_KEY！請至 GitHub Settings -> Secrets and variables -> Actions 新增該金鑰。")
+    raise ValueError("尚未設定 GCP_SA_KEY！")
 
 sa_info = json.loads(raw_key)
 credentials = service_account.Credentials.from_service_account_info(sa_info)
 client = bigquery.Client(credentials=credentials, project=sa_info["project_id"])
 
-# 2. 從 Google BigQuery 比特幣公開原始帳本查詢真實每日 CDD（自動過濾同交易找零）
+# 2. 從 Google BigQuery 比特幣公開原始帳本查詢真實每日 CDD（標準 inputs JOIN outputs 精算每筆 UTXO 持幣秒數）
 query = """
 SELECT
-  FORMAT_TIMESTAMP('%Y-%m-%d', block_timestamp) AS date,
+  FORMAT_TIMESTAMP('%Y-%m-%d', i.block_timestamp) AS date,
   SUM(
-    (value / 1e8) * 
-    (TIMESTAMP_DIFF(block_timestamp, spent_transaction_block_timestamp, SECOND) / 86400.0)
+    (i.value / 1e8) * 
+    (TIMESTAMP_DIFF(i.block_timestamp, o.block_timestamp, SECOND) / 86400.0)
   ) AS real_cdd
-FROM `bigquery-public-data.crypto_bitcoin.inputs`
-WHERE block_timestamp >= TIMESTAMP('2024-01-01')
-  AND spent_transaction_hash != transaction_hash
+FROM `bigquery-public-data.crypto_bitcoin.inputs` AS i
+JOIN `bigquery-public-data.crypto_bitcoin.outputs` AS o
+  ON i.spent_transaction_hash = o.transaction_hash
+  AND i.spent_output_index = o.index
+WHERE i.block_timestamp >= TIMESTAMP('2024-01-01')
+  AND i.spent_transaction_hash != i.transaction_hash
 GROUP BY 1
 ORDER BY 1 ASC
 """
@@ -36,7 +39,7 @@ print("正在從比特幣原始區塊鏈查詢真實每日 CDD...")
 df_cdd = client.query(query).to_dataframe()
 df_cdd["date"] = df_cdd["date"].astype(str)
 
-# 3. 獲取對應日期的真實 BTC 美元每日收盤價（支援 Binance 與 CoinGecko 雙備援）
+# 3. 獲取對應日期的真實 BTC 美元每日收盤價（Binance 與 CoinGecko 雙備援）
 print("正在獲取真實每日 BTC 美元價格...")
 price_rows = []
 try:
