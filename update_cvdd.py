@@ -40,26 +40,30 @@ df_cdd = client.query(query).to_dataframe()
 df_cdd["date"] = df_cdd["date"].astype(str)
 print(f"成功取得 {len(df_cdd)} 筆真實區塊鏈每日 CDD！")
 
-# 3. 獲取對應日期的真實 BTC 美元每日收盤價（使用美國機房完全開放的 Kraken 公開日線 API）
+# 3. 獲取對應日期的真實 BTC 美元每日收盤價（使用 params 傳參，防止網址被截斷）
 print("正在從 Kraken 獲取真實每日 BTC 美元價格...")
 since_ts = int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp())
-kraken_url = f"https://kraken.com{since_ts}"
+kraken_base_url = "https://kraken.com"
+kraken_params = {
+    "pair": "XBTUSD",
+    "interval": 1440,
+    "since": since_ts
+}
 headers = {"User-Agent": "Mozilla/5.0 (compatible; OnChainCVDD/1.0)"}
 
-resp = requests.get(kraken_url, headers=headers, timeout=30)
+resp = requests.get(kraken_base_url, params=kraken_params, headers=headers, timeout=30)
 resp.raise_for_status()
 data = resp.json()
 if data.get("error"):
     raise RuntimeError(f"Kraken API 錯誤: {data['error']}")
 
-# Kraken 回傳鍵名通常為 XXBTZUSD
-pair_key = [k for k in data["result"].keys() if k != "last"]
+pair_key = [k for k in data["result"].keys() if k != "last"][0]
 ohlc_list = data["result"][pair_key]
 
 price_rows = []
 for row in ohlc_list:
-    d_str = datetime.fromtimestamp(int(row), tz=timezone.utc).strftime("%Y-%m-%d")
-    close_price = float(row)
+    d_str = datetime.fromtimestamp(int(row[0]), tz=timezone.utc).strftime("%Y-%m-%d")
+    close_price = float(row[4])
     price_rows.append({"date": d_str, "price": close_price})
 
 df_price = pd.DataFrame(price_rows).drop_duplicates(subset=["date"], keep="last")
