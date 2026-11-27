@@ -52,8 +52,12 @@ if not df.empty:
         cvdd_val = round((cum_vdd / age_days) * 6_000_000, 2)
         new_nodes.append((row["date"], cvdd_val))
 
-pine_dates = [f'     timestamp("{d} 08:00")' for d, _ in new_nodes]
-pine_values = [f'     {v}' for _, v in new_nodes]
+# 將換行與逗號提前組合為一般變數，避免 f-string 內出現反斜線
+pine_dates_list = [f'     timestamp("{d} 08:00")' for d, _ in new_nodes]
+pine_values_list = [f'     {v}' for _, v in new_nodes]
+
+extra_dates = (",\n" + ",\n".join(pine_dates_list)) if pine_dates_list else ""
+extra_values = (",\n" + ",\n".join(pine_values_list)) if pine_values_list else ""
 
 pine_code = f'''//@version=5
 indicator("Auto-Synced Bitcoin CVDD", overlay=true)
@@ -62,13 +66,11 @@ var int[] dates = array.from(
      timestamp("2011-01-01 00:00"), timestamp("2015-01-14 00:00"),
      timestamp("2018-12-15 00:00"), timestamp("2020-03-13 00:00"),
      timestamp("2022-11-21 00:00"), timestamp("2025-12-06 00:00"),
-     timestamp("2026-11-26 08:00"){"," if pine_dates else ""}
-{",\n".join(pine_dates)}
+     timestamp("2026-11-26 08:00"){extra_dates}
  )
 
 var float[] values = array.from(
-     0.30, 215.0, 3180.0, 5250.0, 15600.0, 46500.0, 50877.02{"," if pine_values else ""}
-{",\n".join(pine_values)}
+     0.30, 215.0, 3180.0, 5250.0, 15600.0, 46500.0, 50877.02{extra_values}
  )
 
 get_cvdd(int t) =>
