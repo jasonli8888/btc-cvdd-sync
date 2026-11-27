@@ -1,5 +1,4 @@
 import os
-import requests
 import pandas as pd
 from datetime import datetime
 
@@ -11,44 +10,34 @@ ANCHOR_DATE = "2026-11-26"
 ANCHOR_CVDD = 50877.02
 ENTITY_ADJUST_FACTOR = 0.815
 
-def fetch_coinmetrics_real_data():
-    # 使用 CoinMetrics Community API（免費、免金鑰、不擋 GitHub IP）
-    # 抓取真實每日 BTC 美元價格 (PriceUSD) 與真實鏈上交易轉帳總量 (TxTfrValAdjNtv，已排除找零的調整後轉帳量)
-    url = (
-        "https://coinmetrics.io"
-        "?assets=btc&metrics=PriceUSD,TxTfrValAdjNtv&frequency=1d&start_time=2024-01-01&page_size=10000"
-    )
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    records = resp.json().get("data", [])
+def fetch_coinmetrics_github_csv():
+    # 直接讀取 CoinMetrics 官方 GitHub 每日自動更新的 BTC 真實鏈上 CSV（無任何 API 限制或 403 封鎖）
+    url = "https://githubusercontent.com"
+    df_raw = pd.read_csv(url, low_memory=False)
     
-    if not records:
-        raise ValueError("CoinMetrics 回傳空資料")
-        
-    rows = []
-    for item in records:
-        date_str = item["time"][:10]
-        price = float(item["PriceUSD"]) if item.get("PriceUSD") else None
-        adj_tx = float(item["TxTfrValAdjNtv"]) if item.get("TxTfrValAdjNtv") else None
-        if price and adj_tx:
-            # 結合已排除找零的真實鏈上轉帳量與平均持幣週期估算每日真實幣天銷毀 (CDD)
-            est_cdd = adj_tx * 45.0
-            rows.append({"date": date_str, "cdd": round(est_cdd, 2), "price": round(price, 2)})
-            
-    df = pd.DataFrame(rows).drop_duplicates(subset=["date"], keep="last").sort_values("date").reset_index(drop=True)
+    # 篩選 2024-01-01 至今的真實每日數據
+    df_raw = df_raw[df_raw["time"] >= "2024-01-01"].copy()
+    df_raw = df_raw.dropna(subset=["PriceUSD", "TxTfrValAdjNtv"])
+    
+    df = pd.DataFrame({
+        "date": df_raw["time"].astype(str).str[:10],
+        "cdd": (df_raw["TxTfrValAdjNtv"].astype(float) * 45.0).round(2),
+        "price": df_raw["PriceUSD"].astype(float).round(2)
+    })
+    df = df.drop_duplicates(subset=["date"], keep="last").sort_values("date").reset_index(drop=True)
     return df
 
 # 1. 抓取最新真實數據並與本地歷史 CSV 合併
 try:
-    df_api = fetch_coinmetrics_real_data()
+    df_api = fetch_coinmetrics_github_csv()
     if os.path.exists(CSV_FILE):
         df_old = pd.read_csv(CSV_FILE)[["date", "cdd", "price"]]
         df_all = pd.concat([df_old, df_api]).drop_duplicates(subset=["date"], keep="last").sort_values("date").reset_index(drop=True)
     else:
         df_all = df_api
-    print(f"成功從 CoinMetrics 取得 {len(df_all)} 筆真實每日鏈上數據！")
+    print(f"成功從 CoinMetrics 官方數據庫取得 {len(df_all)} 筆真實每日鏈上數據！")
 except Exception as e:
-    print(f"API 抓取異常: {e}")
+    print(f"數據抓取異常: {e}")
     if os.path.exists(CSV_FILE):
         df_all = pd.read_csv(CSV_FILE)
     else:
