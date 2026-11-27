@@ -18,7 +18,7 @@ sa_info = json.loads(raw_key)
 credentials = service_account.Credentials.from_service_account_info(sa_info)
 client = bigquery.Client(credentials=credentials, project=sa_info["project_id"])
 
-# 2. 從 Google BigQuery 比特幣公開原始帳本查詢真實每日 CDD（標準 inputs JOIN outputs 精算每筆 UTXO 持幣秒數）
+# 2. 從 Google BigQuery 比特幣公開原始帳本查詢真實每日 CDD
 query = """
 SELECT
   FORMAT_TIMESTAMP('%Y-%m-%d', i.block_timestamp) AS date,
@@ -38,27 +38,32 @@ ORDER BY 1 ASC
 print("正在從比特幣原始區塊鏈查詢真實每日 CDD...")
 df_cdd = client.query(query).to_dataframe()
 df_cdd["date"] = df_cdd["date"].astype(str)
+print(f"成功取得 {len(df_cdd)} 筆真實區塊鏈每日 CDD！")
 
-# 3. 獲取對應日期的真實 BTC 美元每日收盤價（Binance 與 CoinGecko 雙備援）
-print("正在獲取真實每日 BTC 美元價格...")
+# 3. 獲取對應日期的真實 BTC 美元每日收盤價（使用美國機房完全開放的 Kraken 公開日線 API）
+print("正在從 Kraken 獲取真實每日 BTC 美元價格...")
+since_ts = int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp())
+kraken_url = f"https://kraken.com{since_ts}"
+headers = {"User-Agent": "Mozilla/5.0 (compatible; OnChainCVDD/1.0)"}
+
+resp = requests.get(kraken_url, headers=headers, timeout=30)
+resp.raise_for_status()
+data = resp.json()
+if data.get("error"):
+    raise RuntimeError(f"Kraken API 錯誤: {data['error']}")
+
+# Kraken 回傳鍵名通常為 XXBTZUSD
+pair_key = [k for k in data["result"].keys() if k != "last"]
+ohlc_list = data["result"][pair_key]
+
 price_rows = []
-try:
-    klines_url = "https://binance.com"
-    resp = requests.get(klines_url, timeout=30)
-    resp.raise_for_status()
-    for k in resp.json():
-        d_str = datetime.fromtimestamp(k / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-        price_rows.append({"date": d_str, "price": float(k)})
-except Exception as e:
-    print(f"Binance 價格端點備援切換 ({e})，改用 CoinGecko...")
-    cg_url = "https://coingecko.com"
-    resp = requests.get(cg_url, timeout=30)
-    resp.raise_for_status()
-    for p in resp.json().get("prices", []):
-        d_str = datetime.fromtimestamp(p / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
-        price_rows.append({"date": d_str, "price": float(p)})
+for row in ohlc_list:
+    d_str = datetime.fromtimestamp(int(row), tz=timezone.utc).strftime("%Y-%m-%d")
+    close_price = float(row)
+    price_rows.append({"date": d_str, "price": close_price})
 
 df_price = pd.DataFrame(price_rows).drop_duplicates(subset=["date"], keep="last")
+print(f"成功取得 {len(df_price)} 筆真實每日 BTC 美元收盤價！")
 
 # 4. 合併真實鏈上 CDD 與真實價格，計算最純粹的真實 CVDD
 df_all = pd.merge(df_cdd, df_price, on="date", how="inner").sort_values("date").reset_index(drop=True)
