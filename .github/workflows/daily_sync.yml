@@ -23,15 +23,17 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install requests pandas
+        run: pip install requests pandas google-cloud-bigquery db-dtypes
 
-      - name: Run CVDD sync script
+      - name: Run Real Blockchain CVDD script
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: python update_cvdd.py
 
-      - name: Commit and push generated file
+      - name: Commit and push real blockchain data
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@://github.com"
-          git add cvdd_indicator.pine
-          git diff --staged --quiet || git commit -m "Update daily CVDD"
+          git add cvdd_indicator.pine cvdd_history.csv
+          git diff --staged --quiet || git commit -m "Sync 100% real BigQuery UTXO CVDD"
           git push
