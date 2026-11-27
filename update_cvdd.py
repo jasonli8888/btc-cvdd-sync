@@ -2,19 +2,23 @@ import os
 import json
 import requests
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timezone
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
 CSV_FILE = "cvdd_history.csv"
 PINE_FILE = "cvdd_indicator.pine"
 
-# 1. 初始化 Google BigQuery 連線（直接查詢比特幣公開原始區塊鏈）
-sa_info = json.loads(os.environ["GCP_SA_KEY"])
+# 1. 檢查並載入 Google BigQuery 服務帳戶金鑰
+raw_key = os.environ.get("GCP_SA_KEY", "").strip()
+if not raw_key:
+    raise ValueError("尚未設定 GCP_SA_KEY！請至 GitHub Settings -> Secrets and variables -> Actions 新增該金鑰。")
+
+sa_info = json.loads(raw_key)
 credentials = service_account.Credentials.from_service_account_info(sa_info)
 client = bigquery.Client(credentials=credentials, project=sa_info["project_id"])
 
-# 2. 查詢自 2024-01-01 至今每天全網真實「幣天數銷毀 (CDD)」
+# 2. 從 Google BigQuery 比特幣公開原始帳本查詢真實每日 CDD（自動過濾同交易找零）
 query = """
 SELECT
   FORMAT_TIMESTAMP('%Y-%m-%d', block_timestamp) AS date,
@@ -30,17 +34,28 @@ ORDER BY 1 ASC
 """
 print("正在從比特幣原始區塊鏈查詢真實每日 CDD...")
 df_cdd = client.query(query).to_dataframe()
+df_cdd["date"] = df_cdd["date"].astype(str)
 
-# 3. 取得對應日期的真實 BTC 美元每日收盤價（Binance 公開歷史 K 線 API）
+# 3. 獲取對應日期的真實 BTC 美元每日收盤價（支援 Binance 與 CoinGecko 雙備援）
 print("正在獲取真實每日 BTC 美元價格...")
-klines_url = "https://binance.com"
-klines = requests.get(klines_url, timeout=30).json()
 price_rows = []
-for k in klines:
-    d_str = datetime.utcfromtimestamp(k / 1000).strftime("%Y-%m-%d")
-    close_p = float(k[4])
-    price_rows.append({"date": d_str, "price": close_p})
-df_price = pd.DataFrame(price_rows)
+try:
+    klines_url = "https://binance.com"
+    resp = requests.get(klines_url, timeout=30)
+    resp.raise_for_status()
+    for k in resp.json():
+        d_str = datetime.fromtimestamp(k / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        price_rows.append({"date": d_str, "price": float(k)})
+except Exception as e:
+    print(f"Binance 價格端點備援切換 ({e})，改用 CoinGecko...")
+    cg_url = "https://coingecko.com"
+    resp = requests.get(cg_url, timeout=30)
+    resp.raise_for_status()
+    for p in resp.json().get("prices", []):
+        d_str = datetime.fromtimestamp(p / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+        price_rows.append({"date": d_str, "price": float(p)})
+
+df_price = pd.DataFrame(price_rows).drop_duplicates(subset=["date"], keep="last")
 
 # 4. 合併真實鏈上 CDD 與真實價格，計算最純粹的真實 CVDD
 df_all = pd.merge(df_cdd, df_price, on="date", how="inner").sort_values("date").reset_index(drop=True)
@@ -59,10 +74,10 @@ df_all["total_cum_vdd"] = base_cum_vdd + df_all["raw_cum_vdd"]
 
 df_all["cvdd"] = ((df_all["total_cum_vdd"] / df_all["age_days"]) * 6_000_000).round(2)
 
-# 5. 儲存真實每日數據庫
+# 5. 儲存真實每日數據庫 CSV
 df_all[["date", "real_cdd", "price", "cvdd"]].to_csv(CSV_FILE, index=False)
 
-# 6. 生成包含所有真實每日數據點的 Pine Script
+# 6. 生成包含早期歷史節點與所有真實每日數據點的 Pine Script（含即時資訊面板）
 early_nodes = [
     ("2011-01-01 00:00", 0.30),
     ("2015-01-14 00:00", 215.0),
@@ -105,10 +120,23 @@ get_cvdd(int t) =>
     res
 
 cvdd_line = get_cvdd(time)
-plot(cvdd_line, title="Real Blockchain CVDD", color=color.new(#00E676, 0), linewidth=2)
+
+// 繪製真實鏈上 CVDD 底部線與週期參考軌道
+plot(cvdd_line,       title="Real CVDD Floor (1x)", color=color.new(#00E676, 0), linewidth=2)
+plot(cvdd_line * 2.5, title="CVDD Mid (2.5x)",      color=color.new(#FFEB3B, 35), linewidth=1)
+plot(cvdd_line * 5.0, title="CVDD Top (5.0x)",      color=color.new(#FF5252, 15), linewidth=2)
+
+// 右上角即時數據面板
+var table info_table = table.new(position.top_right, 2, 2, bgcolor=color.new(#1E222D, 15), border_width=1)
+if barstate.islast
+    float dist_pct = ((close - cvdd_line) / cvdd_line) * 100
+    table.cell(info_table, 0, 0, "真實鏈上 CVDD", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 0, "$" + str.tostring(cvdd_line, "#,###.##"), text_color=#00E676, text_size=size.small)
+    table.cell(info_table, 0, 1, "現價高於底部", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 1, "+" + str.tostring(dist_pct, "#.##") + "%", text_color=#FFEB3B, text_size=size.small)
 '''
 
 with open(PINE_FILE, "w", encoding="utf-8") as f:
     f.write(pine_code)
 
-print(f"成功從比特幣原始帳本計算出 {len(df_all)} 天真實 CVDD 數據！")
+print(f"成功從比特幣原始帳本計算出 {len(df_all)} 天真實 CVDD 數據，最新值為 ${df_all.iloc[-1]['cvdd']}！")
